@@ -55,7 +55,7 @@ public class MainActivity extends Activity {
         panel.setPadding(dp(12), dp(12), dp(12), dp(12));
 
         TextView title = new TextView(this);
-        title.setText("Меню");
+        title.setText("@leontapkey_off");
         title.setGravity(Gravity.CENTER);
         title.setTextColor(0xFFFFFFFF);
         title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 18);
