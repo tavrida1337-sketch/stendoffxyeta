@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Куб Раннер 3D</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: #0b0f1e;
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; color: #fff;
+    touch-action: none; user-select: none; -webkit-user-select: none; }
+  canvas { display: block; }
+  #hud { position: fixed; top: 12px; left: 16px; right: 16px; display: flex;
+    justify-content: space-between; font-size: 20px; font-weight: 700;
+    text-shadow: 0 2px 6px rgba(0,0,0,.6); pointer-events: none; }
+  #overlay { position: fixed; inset: 0; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; gap: 16px; text-align: center;
+    background: rgba(11,15,30,.75); padding: 16px; }
+  #overlay h1 { font-size: 40px; letter-spacing: 1px; }
+  #overlay p { font-size: 16px; opacity: .85; max-width: 420px; line-height: 1.5; }
+  #overlay button { font-size: 20px; font-weight: 700; padding: 14px 40px; border: 0;
+    border-radius: 12px; background: #ffb400; color: #1a1a1a; cursor: pointer; }
+  #overlay button:active { transform: scale(.97); }
+  .hidden { display: none !important; }
+</style>
+</head>
+<body>
+<div id="hud"><span id="score">Очки: 0</span><span id="best">Рекорд: 0</span></div>
+<div id="overlay">
+  <h1 id="title">Куб Раннер 3D</h1>
+  <p id="text">Уворачивайся от красных блоков и собирай жёлтые монеты.<br>
+    ← → / A D — смена полосы, Пробел / ↑ — прыжок.<br>
+    На телефоне: свайп влево/вправо, свайп вверх или тап — прыжок.</p>
+  <button id="start">Играть</button>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+(() => {
+  // ---------- Сцена ----------
+  const scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x0b0f1e);
+  scene.fog = new THREE.Fog(0x0b0f1e, 20, 70);
+
+  const camera = new THREE.PerspectiveCamera(60, innerWidth / innerHeight, 0.1, 200);
+  camera.position.set(0, 4.5, 8);
+  camera.lookAt(0, 1, -6);
+
+  const renderer = new THREE.WebGLRenderer({ antialias: true });
+  renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+  renderer.setSize(innerWidth, innerHeight);
+  renderer.shadowMap.enabled = true;
+  document.body.appendChild(renderer.domElement);
+
+  scene.add(new THREE.HemisphereLight(0x8899ff, 0x222233, 0.7));
+  const sun = new THREE.DirectionalLight(0xffffff, 0.9);
+  sun.position.set(5, 12, 6);
+  sun.castShadow = true;
+  sun.shadow.mapSize.set(1024, 1024);
+  Object.assign(sun.shadow.camera, { left: -12, right: 12, top: 12, bottom: -30, far: 60 });
+  scene.add(sun);
+
+  // ---------- Дорога ----------
+  const LANES = [-2.5, 0, 2.5];
+  const road = new THREE.Mesh(
+    new THREE.PlaneGeometry(9, 200),
+    new THREE.MeshStandardMaterial({ color: 0x1c2340 })
+  );
+  road.rotation.x = -Math.PI / 2;
+  road.position.z = -80;
+  road.receiveShadow = true;
+  scene.add(road);
+
+  // Движущиеся полосы разметки
+  const stripes = [];
+  const stripeMat = new THREE.MeshBasicMaterial({ color: 0x3d4a80 });
+  for (let i = 0; i < 30; i++) {
+    for (const x of [-1.25, 1.25]) {
+      const s = new THREE.Mesh(new THREE.PlaneGeometry(0.12, 2), stripeMat);
+      s.rotation.x = -Math.PI / 2;
+      s.position.set(x, 0.01, -i * 5);
+      scene.add(s);
+      stripes.push(s);
+    }
+  }
+
+  // ---------- Игрок ----------
+  const player = new THREE.Mesh(
+    new THREE.BoxGeometry(1, 1, 1),
+    new THREE.MeshStandardMaterial({ color: 0x31d3ff, emissive: 0x0a3a55 })
+  );
+  player.castShadow = true;
+  player.position.set(0, 0.5, 0);
+  scene.add(player);
+
+  // ---------- Объекты ----------
+  const obstacleGeo = new THREE.BoxGeometry(1.6, 1.6, 1.6);
+  const obstacleMat = new THREE.MeshStandardMaterial({ color: 0xff3b5c, emissive: 0x330010 });
+  const coinGeo = new THREE.CylinderGeometry(0.4, 0.4, 0.12, 24);
+  const coinMat = new THREE.MeshStandardMaterial({ color: 0xffc400, emissive: 0x553300, metalness: 0.6, roughness: 0.3 });
+  let objects = [];
+
+  function spawnRow(z) {
+    const lanes = [0, 1, 2].sort(() => Math.random() - 0.5);
+    const blocked = Math.random() < 0.35 ? 2 : 1;
+    for (let i = 0; i < blocked; i++) {
+      const m = new THREE.Mesh(obstacleGeo, obstacleMat);
+      m.position.set(LANES[lanes[i]], 0.8, z);
+      m.castShadow = true;
+      m.userData.type = 'obstacle';
+      scene.add(m); objects.push(m);
+    }
+    if (Math.random() < 0.7) {
+      const c = new THREE.Mesh(coinGeo, coinMat);
+      c.rotation.x = Math.PI / 2;
+      c.position.set(LANES[lanes[2]], 0.9, z);
+      c.userData.type = 'coin';
+      scene.add(c); objects.push(c);
+    }
+  }
+
+  // ---------- Состояние ----------
+  let lane = 1, targetX = 0, velY = 0, speed = 14, score = 0, playing = false, nextRow = -30;
+  let best = 0;
+  try { best = +localStorage.getItem('cubeRunnerBest') || 0; } catch (e) {}
+
+  const $score = document.getElementById('score');
+  const $best = document.getElementById('best');
+  const $overlay = document.getElementById('overlay');
+  const $title = document.getElementById('title');
+  const $text = document.getElementById('text');
+  const $start = document.getElementById('start');
+  $best.textContent = 'Рекорд: ' + best;
+
+  function reset() {
+    objects.forEach(o => scene.remove(o));
+    objects = [];
+    lane = 1; targetX = 0; velY = 0; speed = 14; score = 0; nextRow = -30;
+    player.position.set(0, 0.5, 0);
+    player.rotation.set(0, 0, 0);
+    for (let z = -30; z > -70; z -= 12) spawnRow(z);
+    nextRow = -70;
+  }
+
+  function start() {
+    reset();
+    playing = true;
+    $overlay.classList.add('hidden');
+  }
+
+  function gameOver() {
+    playing = false;
+    const s = Math.floor(score);
+    if (s > best) {
+      best = s;
+      try { localStorage.setItem('cubeRunnerBest', best); } catch (e) {}
+      $best.textContent = 'Рекорд: ' + best;
+    }
+    $title.textContent = 'Игра окончена';
+    $text.innerHTML = 'Твой счёт: <b>' + s + '</b><br>Рекорд: ' + best;
+    $start.textContent = 'Ещё раз';
+    $overlay.classList.remove('hidden');
+  }
+
+  // ---------- Управление ----------
+  const move = d => { if (playing) { lane = Math.max(0, Math.min(2, lane + d)); targetX = LANES[lane]; } };
+  const jump = () => { if (playing && player.position.y <= 0.51) velY = 11; };
+
+  addEventListener('keydown', e => {
+    if (!playing && (e.code === 'Enter' || e.code === 'Space')) { start(); return; }
+    if (e.code === 'ArrowLeft' || e.code === 'KeyA') move(-1);
+    if (e.code === 'ArrowRight' || e.code === 'KeyD') move(1);
+    if (e.code === 'ArrowUp' || e.code === 'KeyW' || e.code === 'Space') jump();
+  });
+
+  let tx = 0, ty = 0;
+  renderer.domElement.addEventListener('touchstart', e => {
+    tx = e.touches[0].clientX; ty = e.touches[0].clientY;
+  }, { passive: true });
+  renderer.domElement.addEventListener('touchend', e => {
+    const dx = e.changedTouches[0].clientX - tx;
+    const dy = e.changedTouches[0].clientY - ty;
+    if (Math.abs(dx) < 25 && Math.abs(dy) < 25) jump();
+    else if (Math.abs(dx) > Math.abs(dy)) move(dx > 0 ? 1 : -1);
+    else if (dy < 0) jump();
+  }, { passive: true });
+
+  $start.addEventListener('click', start);
+
+  // ---------- Игровой цикл ----------
+  const clock = new THREE.Clock();
+  function tick() {
+    const dt = Math.min(clock.getDelta(), 0.05);
+
+    if (playing) {
+      speed += dt * 0.35;
+      score += dt * speed * 0.5;
+      $score.textContent = 'Очки: ' + Math.floor(score);
+
+      // Движение игрока
+      player.position.x += (targetX - player.position.x) * Math.min(1, dt * 12);
+      velY -= 25 * dt;
+      player.position.y = Math.max(0.5, player.position.y + velY * dt);
+      if (player.position.y > 0.5) player.rotation.x -= dt * 8;
+      else player.rotation.x = 0;
+
+      // Разметка
+      stripes.forEach(s => { s.position.z += speed * dt; if (s.position.z > 5) s.position.z -= 150; });
+
+      // Объекты
+      nextRow += speed * dt;
+      if (nextRow > -58) { spawnRow(-70); nextRow -= Math.max(7, 13 - speed * 0.15); }
+
+      for (let i = objects.length - 1; i >= 0; i--) {
+        const o = objects[i];
+        o.position.z += speed * dt;
+        if (o.userData.type === 'coin') o.rotation.z += dt * 4;
+
+        const dx = Math.abs(o.position.x - player.position.x);
+        const dz = Math.abs(o.position.z - player.position.z);
+        if (o.userData.type === 'obstacle') {
+          if (dx < 1.25 && dz < 1.25 && player.position.y < 2.0) { gameOver(); break; }
+        } else if (dx < 0.9 && dz < 0.9 && player.position.y < 1.8) {
+          score += 25;
+          scene.remove(o); objects.splice(i, 1);
+          continue;
+        }
+        if (o.position.z > 10) { scene.remove(o); objects.splice(i, 1); }
+      }
+    }
+
+    camera.position.x += (player.position.x * 0.4 - camera.position.x) * Math.min(1, dt * 4);
+    renderer.render(scene, camera);
+    requestAnimationFrame(tick);
+  }
+
+  addEventListener('resize', () => {
+    camera.aspect = innerWidth / innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(innerWidth, innerHeight);
+  });
+
+  reset();
+  tick();
+})();
+</script>
+</body>
+</html>
